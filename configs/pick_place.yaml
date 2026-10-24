@@ -1,0 +1,62 @@
+# Humanoid-DART pick-and-place experiment.
+#
+#   uv run dart-run --config configs/pick_place.yaml
+#
+# Any value can be overridden on the CLI, e.g. --num_gpus 4 --out_dir results/pp_2
+# Values below are those last committed for the pipeline on
+# Atarilab/mjlab@folm_cluster_rebuttal (src/mjlab/scripts/FoLM/pipeline_config.yaml),
+# except: W&B is off by default, a single GPU is used, and paths point into this repo.
+
+# ── Task ──────────────────────────────────────────────────────────────────────
+task: Mjlab-Tracking-Flat-Unitree-G1-Box-No-State-Estimation
+evo_task: pick_place_relative_box_pose
+base_motion: motions/pick_place.npz
+
+# ── General ───────────────────────────────────────────────────────────────────
+out_dir: results/pick_place     # wiped at start if it holds a previous run
+device: cuda:0
+num_gpus: 1                     # >1: tracker training via torch.distributed, rollouts split per GPU
+viewer: headless
+num_samples: 3000               # candidates generated + rolled out per iteration
+iterations: 4                   # iterations per generation
+generations: 20
+train: true                     # retrain the tracker on the archive after each generation
+curriculum: frontier            # random | frontier | thompson
+# checkpoint_file: checkpoints/model_3999.pt   # tracker pretrained on the seeds; trained from scratch if unset
+
+# ── Weights & Biases ─────────────────────────────────────────────────────────
+wandb:
+  project: null                 # set a project name to log to W&B (TensorBoard otherwise)
+
+# ── RL Policy Training ───────────────────────────────────────────────────────
+training:
+  num_envs: 4096
+  initial_max_iterations: 4000  # from-scratch training (no checkpoint_file)
+  elite_max_iterations: 1200    # fine-tuning on the archive each generation
+
+# ── Diffusion Model ──────────────────────────────────────────────────────────
+diffusion:
+  # config_path: null           # defaults to the packaged humanoid_dart/planner/config/config.yaml
+  # checkpoint: null            # resume from a previous diffusion checkpoint
+  subset_size: 200              # max elites for diffusion training
+  reset_every: 1                # retrain diffusion from scratch every N generations (0 = train every iteration)
+  sampling: frontier            # stratified | clustered | frontier
+  num_bins: 4                   # coarse bins for "clustered" sampling
+  initial_epochs: 50            # first fit on the base trajectories
+  train_epochs: 10              # epochs per incremental update
+  reset_epochs: 50              # epochs when retraining from scratch
+  chunk_size: 6000              # generation batch size
+  stats_elite_threshold: 100    # double train_epochs after this many new elites in a generation
+  cfg_weight: 2.0               # classifier-free guidance weight
+
+# ── Evolution ─────────────────────────────────────────────────────────────────
+evolution:
+  fitness_threshold: 0.0005     # minimum fitness to enter the archive
+  diffusion_probability: 1.0    # probability of using diffusion vs DCT mutation per sample
+  neighbor_k: 5
+  neighbor_tolerance: 0.02
+  max_traj_length: 550          # generated trajectory length (timesteps)
+
+# ── Closed-loop replanning (not included in this release) ───────────────────
+replanning:
+  enabled: false

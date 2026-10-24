@@ -1,0 +1,14 @@
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+# Run outputs
+logs/
+results/
+wandb/
+# Large data; seed motions in motions/ are tracked
+*.npz
+*.pt
+*.pth
+!motions/*.npz
+!checkpoints/*.pt

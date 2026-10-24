@@ -1,0 +1,191 @@
+"""Script to train RL agent with RSL-RL."""
+
+import os
+import sys
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, cast
+
+import tyro
+from rsl_rl.runners import OnPolicyRunner
+
+from humanoid_dart.envs import DartRlEnv
+from mjlab.rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
+from humanoid_dart.tracking.mdp import MotionCommandCfg
+from mjlab.utils.os import dump_yaml, get_checkpoint_path
+from mjlab.utils.torch import configure_torch_backends
+from mjlab.utils.wrappers import VideoRecorder
+
+
+@dataclass(frozen=True)
+class TrainConfig:
+  env: Any
+  agent: RslRlOnPolicyRunnerCfg
+  registry_name: str | None = None
+  motion_file: str | None = None
+  checkpoint_file: str | None = None
+  """Resume from this checkpoint path (overrides agent.resume/load_run)."""
+  device: str = "cuda:0"
+  video: bool = False
+  video_length: int = 200
+  video_interval: int = 2000
+  enable_nan_guard: bool = False
+  distributed: bool = False
+
+
+def run_train(task_id: str, cfg: TrainConfig) -> None:
+  configure_torch_backends()
+
+  # Multi-GPU training configuration.
+  device = cfg.device
+  if cfg.distributed:
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    device = f"cuda:{local_rank}"
+
+    # Set seed to have diversity in different processes.
+    seed = cfg.agent.seed + local_rank
+    cfg.env.seed = seed
+    cfg.agent.seed = seed
+
+    print(
+      f"[INFO] Multi-GPU training enabled: local_rank={local_rank}, device={device}, seed={seed}"
+    )
+
+  registry_name: str | None = None
+
+  # Check if this is a tracking task by checking for motion command.
+  is_tracking_task = (
+    cfg.env.commands is not None
+    and "motion" in cfg.env.commands
+    and isinstance(cfg.env.commands["motion"], MotionCommandCfg)
+  )
+
+  if is_tracking_task:
+    assert cfg.env.commands is not None
+    motion_cmd = cfg.env.commands["motion"]
+    assert isinstance(motion_cmd, MotionCommandCfg)
+
+    if cfg.registry_name:
+      # Check if the registry name includes alias, if not, append ":latest".
+      registry_name = cast(str, cfg.registry_name)
+      if ":" not in registry_name:
+        registry_name = registry_name + ":latest"
+      import wandb
+
+      api = wandb.Api()
+      artifact = api.artifact(registry_name)
+      motion_cmd.motion_file = str(Path(artifact.download()) / "motion.npz")
+    elif cfg.motion_file is not None:
+      # motion_file provided via CLI: --motion-file /path/to/motion.npz
+      print(f"[INFO] Using local motion file: {cfg.motion_file}")
+      motion_cmd.motion_file = cfg.motion_file
+    elif getattr(motion_cmd, "motion_file", None) and motion_cmd.motion_file:
+      # motion_file already set in config
+      print(f"[INFO] Using motion file from config: {motion_cmd.motion_file}")
+    else:
+      raise ValueError(
+        "Must provide --registry-name or --motion-file for tracking tasks."
+      )
+
+  # Enable NaN guard if requested.
+  if cfg.enable_nan_guard:
+    cfg.env.sim.nan_guard.enabled = True
+    print(f"[INFO] NaN guard enabled, output dir: {cfg.env.sim.nan_guard.output_dir}")
+
+  # Specify directory for logging experiments.
+  log_root_path = Path("logs") / "rsl_rl" / cfg.agent.experiment_name
+  log_root_path.resolve()
+  print(f"[INFO] Logging experiment in directory: {log_root_path}")
+  log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+  if cfg.agent.run_name:
+    log_dir += f"_{cfg.agent.run_name}"
+  log_dir = log_root_path / log_dir
+
+  env = DartRlEnv(
+    cfg=cfg.env, device=device, render_mode="rgb_array" if cfg.video else None
+  )
+
+  resume_path = (
+    get_checkpoint_path(log_root_path, cfg.agent.load_run, cfg.agent.load_checkpoint)
+    if cfg.agent.resume
+    else None
+  )
+  if cfg.checkpoint_file is not None:
+    resume_path = Path(cfg.checkpoint_file)
+
+  if cfg.video:
+    env = VideoRecorder(
+      env,
+      video_folder=Path(log_dir) / "videos" / "train",
+      step_trigger=lambda step: step % cfg.video_interval == 0,
+      video_length=cfg.video_length,
+      disable_logger=True,
+    )
+    print("[INFO] Recording videos during training.")
+
+  env = RslRlVecEnvWrapper(env, clip_actions=cfg.agent.clip_actions)
+
+  agent_cfg = asdict(cfg.agent)
+  env_cfg = asdict(cfg.env)
+
+  runner_cls = load_runner_cls(task_id)
+  if runner_cls is None:
+    runner_cls = OnPolicyRunner
+
+  runner_kwargs = {}
+  if is_tracking_task:
+    runner_kwargs["registry_name"] = registry_name
+
+  runner = runner_cls(env, agent_cfg, str(log_dir), device, **runner_kwargs)
+
+  runner.add_git_repo_to_log(__file__)
+  if resume_path is not None:
+    print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+    runner.load(str(resume_path), map_location=device)
+
+  dump_yaml(log_dir / "params" / "env.yaml", env_cfg)
+  dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
+
+  runner.learn(
+    num_learning_iterations=cfg.agent.max_iterations, init_at_random_ep_len=True
+  )
+
+  env.close()
+
+
+def main():
+  # Parse first argument to choose the task.
+  # Import tasks to populate the registry.
+  import humanoid_dart.tracking  # noqa: F401
+
+  all_tasks = list_tasks()
+  chosen_task, remaining_args = tyro.cli(
+    tyro.extras.literal_type_from_choices(all_tasks),
+    add_help=False,
+    return_unknown_args=True,
+  )
+
+  # Parse the rest of the arguments + allow overriding env_cfg and agent_cfg.
+  env_cfg = load_env_cfg(chosen_task)
+  agent_cfg = load_rl_cfg(chosen_task)
+  assert isinstance(agent_cfg, RslRlOnPolicyRunnerCfg)
+
+  args = tyro.cli(
+    TrainConfig,
+    args=remaining_args,
+    default=TrainConfig(env=env_cfg, agent=agent_cfg),
+    prog=sys.argv[0] + f" {chosen_task}",
+    config=(
+      tyro.conf.AvoidSubcommands,
+      tyro.conf.FlagConversionOff,
+    ),
+  )
+  del env_cfg, agent_cfg, remaining_args
+
+  run_train(chosen_task, args)
+
+
+if __name__ == "__main__":
+  main()

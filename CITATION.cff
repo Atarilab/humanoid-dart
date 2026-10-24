@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the paper below."
+title: "Humanoid-DART"
+type: software
+license: Apache-2.0
+repository-code: "https://github.com/Atarilab/humanoid-dart"
+url: "https://pran-d.github.io/Humanoid-DART/"
+authors: &authors
+  - family-names: Thiagarajan
+    given-names: Kanish
+    affiliation: Technical University of Munich
+  - family-names: Debbad
+    given-names: Pranav
+    affiliation: Technical University of Munich
+  - family-names: Dhédin
+    given-names: Victor
+    affiliation: Technical University of Munich
+  - family-names: Omar
+    given-names: Shafeef
+    affiliation: Technical University of Munich
+  - family-names: Khadiv
+    given-names: Majid
+    affiliation: Technical University of Munich
+preferred-citation:
+  type: article
+  title: "Humanoid-DART: Humanoid Loco-Manipulation using Diffusion-guided Augmentation through Relabeling and Tracking"
+  authors: *authors
+  journal: "IEEE Robotics and Automation Letters"
+  year: 2026
+  # Add volume, issue, start/end and doi once IEEE assigns them.
+  identifiers:
+    - type: other
+      value: "arXiv:2606.26855"
+      description: arXiv preprint

@@ -1,0 +1,105 @@
+[build-system]
+requires = ["uv_build>=0.8.18,<0.12"]
+build-backend = "uv_build"
+
+[project]
+name = "humanoid-dart"
+version = "0.1.0"
+description = "Humanoid-DART: humanoid loco-manipulation via diffusion-guided augmentation through relabeling and tracking."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  # mjlab at the upstream commit the paper code was developed on. The tracking
+  # task, env changes and G1 variant live in this package instead of a fork.
+  "mjlab @ git+https://github.com/mujocolab/mjlab@2309ffbd5625f3c4e2594189b59144dfc8875bcc",
+  # Simulation / RL stack, as declared on Atarilab/mjlab@folm_cluster_rebuttal.
+  "mujoco==3.8.1",
+  "mujoco-warp>=3.8.0",
+  "warp-lang==1.13.0",
+  "torch==2.9.0",
+  "rsl-rl-lib==3.1.1",
+  "tyro>=1.0.1",
+  "wandb>=0.22.3",
+  # Diffusion planner.
+  "diffusers>=0.37.1",
+  "einops>=0.8.2",
+  "rotary-embedding-torch>=0.8.9",
+  "timm>=1.0.27",
+  # Pipeline utilities.
+  "numpy",
+  "scipy",
+  "pyyaml",
+  "matplotlib>=3.10.0",
+  "pandas",
+  "scikit-learn",
+  "psutil",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+# Default install (no extra): PyPI torch 2.9.0, whose Linux wheel is the CUDA
+# 12.8 build used for the experiments. `cpu` is for the CPU smoke tests;
+# `cu128` (same build, from the PyTorch index) mainly exists so uv resolves
+# the two torch variants separately.
+cu128 = ["torch==2.9.0", "torchvision==0.24.0"]
+cpu = ["torch==2.9.0", "torchvision==0.24.0"]
+
+[project.scripts]
+dart-run = "humanoid_dart.dart.run_evolutionary_pipeline:main"
+dart-train = "humanoid_dart.scripts.train:main"
+dart-play = "humanoid_dart.scripts.play:main"
+
+[dependency-groups]
+dev = ["pytest>=8.4.2"]
+
+[tool.uv]
+# Resolve as of the last dependency change on Atarilab/mjlab@folm_cluster_rebuttal
+# (88e2d70, 2026-05-27). mujoco-warp only sets lower bounds, so without this
+# cut-off uv would pick today's mujoco/warp releases.
+exclude-newer = "2026-05-28T00:00:00Z"
+# mjlab@2309ffb routes warp-lang to pypi.nvidia.com, which publishes no upload
+# dates; warp-lang is pinned explicitly instead (latest stable before the cut-off).
+exclude-newer-package = { warp-lang = false }
+conflicts = [
+  [{extra = "cu128"}, {extra = "cpu"}],
+]
+override-dependencies = [
+  # mjlab@2309ffb declares mujoco<=3.3.8. The paper runs used 3.8.1 dev builds
+  # from py.mujoco.org, which that nightly index no longer serves; 3.8.1 is
+  # the matching stable release on PyPI.
+  "mujoco==3.8.1",
+  # mjlab@2309ffb pins mujoco-warp@e605c40 via its own tool.uv.sources; the
+  # paper runs used the newer revision below.
+  "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp@88b55fc2696960b927bc12584994bb8412b36558",
+]
+# The pipeline needs CUDA (MuJoCo Warp), so only Linux x86_64 is resolved.
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", extra = "cu128" },
+  { index = "pytorch-cpu", extra = "cpu" },
+]
+# torchvision (pulled in by timm) must come from the same index as torch.
+torchvision = [
+  { index = "pytorch-cu128", extra = "cu128" },
+  { index = "pytorch-cpu", extra = "cpu" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: end-to-end pipeline run (minutes on CPU)"]
